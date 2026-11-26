@@ -8,9 +8,9 @@ import streamlit as st
 st.set_page_config(page_title="Prédiction Elo aux échecs", page_icon="♟️", layout="wide")
 
 MODEL_PATH = (
-    "models/elo_predictor_multi_pipeline.joblib"
-    if os.path.exists("models/elo_predictor_multi_pipeline.joblib")
-    else "elo_predictor_multi_pipeline.joblib"
+    "models/elo_predictor_pipeline.joblib"
+    if os.path.exists("models/elo_predictor_pipeline.joblib")
+    else "elo_predictor_pipeline.joblib"
 )
 DEFAULT_STOCKFISH = (
     os.getenv("STOCKFISH_PATH")
