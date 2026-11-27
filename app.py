@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import joblib, chess, chess.pgn, chess.engine, shap
 import streamlit as st
 
-st.set_page_config(page_title="Prédiction Elo aux échecs", page_icon="♟️", layout="wide")
+st.set_page_config(page_title="Prédiction du classement Elo aux échecs", page_icon="♟️", layout="wide")
 
 MODEL_PATH = (
     "models/elo_predictor_pipeline.joblib"
@@ -227,7 +227,7 @@ def analyze_pgn(pgn_text: str, stockfish_path: str, time_limit: float = 0.05):
     df_games = pd.DataFrame(all_rows)
     df_games["tc_raw"] = tc_labels
     df_profiles = aggregate_player_profiles(df_games)
-    df_profiles["Elo estimé"] = np.round(pipeline.predict(df_profiles[feature_cols])).astype(int)
+    df_profiles["Elo prédit"] = np.round(pipeline.predict(df_profiles[feature_cols])).astype(int)
     return df_games, df_profiles, skipped, pipeline, feature_cols
 
 
@@ -301,25 +301,49 @@ DEMO_PGN = """
 12. g5 { [%eval 0.78] [%clk 0:02:28] } 12... Nh5 { [%eval 1.45] [%clk 0:02:22] } 1-0
 """
 
+def render_hd_plot(fig, dpi: int = 300):
+    """Affiche une figure Matplotlib/SHAP en haute résolution (style Retina) dans Streamlit."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    st.image(buf, use_container_width=True)
+
 # --- Interface Streamlit ---
-st.title("♟️ Estimation du classement Elo aux échecs")
-st.caption(
-    "Modèle CatBoost entraîné sur des profils agrégés de 10 parties Lichess (MAE global : **165 Elo**). "
-    "Compatible **Lichess** et **Chess.com** *(les estimations sont exprimées en équivalent Elo Lichess)*."
+st.title("♟️ Prédiction du classement Elo aux échecs")
+st.markdown(
+    "Modèle CatBoost entraîné sur 120 000 parties Lichess agrégées.  \n"
+    "Compatible Lichess et Chess.com (les prédictions sont exprimées en équivalent Elo Lichess)."
+)
+
+STOCKFISH_BIN = (
+    os.getenv("STOCKFISH_PATH")
+    or shutil.which("stockfish")
+    or ("/usr/games/stockfish" if os.path.exists("/usr/games/stockfish") else None)
 )
 
 with st.sidebar:
     st.header("Paramètres")
-    sf_path = st.text_input("Chemin vers Stockfish (si PGN sans [%eval])", value=DEFAULT_STOCKFISH)
     sf_time = st.slider("Temps Stockfish par coup (s)", 0.02, 0.20, 0.05, 0.01)
-    st.info("Pour une estimation optimale, fournissez 5 à 10 parties d'un même joueur dans la même cadence.")
+    if STOCKFISH_BIN and os.path.exists(STOCKFISH_BIN):
+        sf_path = STOCKFISH_BIN
+        st.success("Moteur Stockfish prêt.")
+    else:
+        sf_path = st.text_input("Chemin local vers Stockfish (si PGN sans [%eval])", value="")
+    st.info("Pour une prédiction optimale, fournissez 5 à 10 parties d'un même joueur dans la même cadence.")
 
-tab_upload, tab_paste = st.tabs(["Importer un fichier .pgn", "Coller du texte PGN"])
+tab_upload, tab_paste = st.tabs(["Importer un fichier .pgn", "Coller un texte PGN"])
 pgn_input = ""
 with tab_upload:
-    uploaded = st.file_uploader("Choisissez un fichier PGN (1 ou plusieurs parties)", type=["pgn", "txt"])
-    if uploaded is not None:
-        pgn_input = uploaded.getvalue().decode("utf-8", errors="replace")
+    uploaded_files = st.file_uploader(
+        "Choisissez un ou plusieurs fichiers PGN",
+        type=["pgn", "txt"],
+        accept_multiple_files=True,
+    )
+    if uploaded_files:
+        pgn_input = "\n\n".join(
+            f.getvalue().decode("utf-8", errors="replace") for f in uploaded_files
+        )
 with tab_paste:
     pasted = st.text_area("Collez le contenu PGN ici", height=200)
     if pasted.strip():
@@ -327,9 +351,9 @@ with tab_paste:
 
 col_run, col_demo = st.columns([2, 1])
 with col_run:
-    run_clicked = st.button("Estimer le classement Elo", type="primary", use_container_width=True, disabled=not pgn_input.strip())
+    run_clicked = st.button("Prédire le classement Elo", type="primary", use_container_width=True, disabled=not pgn_input.strip())
 with col_demo:
-    demo_clicked = st.button("Tester avec un exemple (1 clic)", use_container_width=True)
+    demo_clicked = st.button("Tester avec un exemple", use_container_width=True)
 
 if run_clicked or demo_clicked:
     source_pgn = DEMO_PGN if demo_clicked else pgn_input
@@ -345,46 +369,120 @@ if "results" in st.session_state:
         st.warning(msg)
 
     # 1. Synthèse par cadence
-    st.subheader("Classement Elo estimé par joueur et par cadence")
+    st.subheader("Classement Elo prédit par joueur et par cadence")
     present_cats = [c for c in CADENCE_ORDER if c in df_profiles["time_category"].values]
     cols = st.columns(min(len(present_cats), 2))
 
     for i, cat in enumerate(present_cats):
         sub = (
             df_profiles[df_profiles["time_category"] == cat][
-                ["player_name", "n_games", "accuracy_pct_mean", "acpl_mean", "Elo estimé"]
+                ["player_name", "n_games", "accuracy_pct_mean", "acpl_mean", "Elo prédit"]
             ]
             .rename(columns={
                 "player_name": "Joueur", "n_games": "Parties",
                 "accuracy_pct_mean": "Précision moy. (%)", "acpl_mean": "ACPL moyen",
             })
-            .sort_values(["Elo estimé", "Parties"], ascending=[False, False])
+            .sort_values(["Elo prédit", "Parties"], ascending=[False, False])
         )
         with cols[i % len(cols)]:
             st.markdown(f"**{cat}**")
-            st.dataframe(sub, hide_index=True, use_container_width=True)
+            st.dataframe(
+                sub.round({"Précision moy. (%)": 1, "ACPL moyen": 1}),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Précision moy. (%)": st.column_config.NumberColumn(format="%.1f"),
+                    "ACPL moyen": st.column_config.NumberColumn(format="%.1f"),
+                },
+            )
 
     # 2. Détail des parties
-    with st.expander(f"Voir le détail des {df_games['game_id'].nunique()} partie(s) analysée(s)"):
-        detail_df = pd.DataFrame({
-            "Partie": df_games["game_id"],
-            "Cadence": df_games["time_category"] + " (" + df_games["tc_raw"] + ")",
-            "Camp": ["Blancs" if i % 2 == 0 else "Noirs" for i in range(len(df_games))],
-            "Joueur": df_games["player_name"],
-            "Résultat": df_games["result_score"].map(RESULT_LABELS),
-            "Précision (%)": df_games["accuracy_pct"].round(1),
-            "ACPL": df_games["acpl"].round(1),
-        })
-        st.dataframe(detail_df, hide_index=True, use_container_width=True)
+    n_games = df_games["game_id"].nunique()
+    expander_title = (
+        "Voir le détail de la partie analysée"
+        if n_games == 1
+        else f"Voir le détail des {n_games} parties analysées"
+    )
 
-    # 3. Explication SHAP interactive pour un profil choisi
-    st.subheader("Explication de la prédiction (SHAP)")
+    with st.expander(expander_title):
+        grouped_games = list(df_games.groupby("game_id", sort=False))
+        n_cols = 2
+
+        for start in range(0, len(grouped_games), n_cols):
+            cols = st.columns(n_cols)
+            for col, (game_id, grp) in zip(cols, grouped_games[start : start + n_cols]):
+                cadence = f"{grp['time_category'].iloc[0]} ({grp['tc_raw'].iloc[0]})"
+                tbl = pd.DataFrame({
+                    "Camp": ["Blancs", "Noirs"][:len(grp)],
+                    "Joueur": grp["player_name"].values,
+                    "Résultat": grp["result_score"].map(RESULT_LABELS).values,
+                    "Précision (%)": grp["accuracy_pct"].round(1).values,
+                    "ACPL": grp["acpl"].round(1).values,
+                })
+                with col:
+                    st.markdown(f"**Partie #{game_id} – {cadence}**")
+                    st.dataframe(
+                        tbl,
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            "Précision (%)": st.column_config.NumberColumn(format="%.1f"),
+                            "ACPL": st.column_config.NumberColumn(format="%.1f"),
+                        },
+                    )
+
+    # 3. Analyse détaillée du profil sélectionné
+    st.subheader("Analyse détaillée du profil sélectionné")
     options = [
-        f"{r['player_name']} — {r['time_category']} ({r['n_games']} partie(s) | Elo estimé : {r['Elo estimé']})"
+        f"{r['player_name']} – {r['time_category']} ({r['n_games']} {'partie' if r['n_games'] == 1 else 'parties'} | Elo prédit : {r['Elo prédit']})"
         for _, r in df_profiles.iterrows()
     ]
     selected_idx = st.selectbox("Choisir un profil à expliquer :", range(len(options)), format_func=lambda i: options[i])
 
+
+    row_sel = df_profiles.iloc[selected_idx]
+    col_g1, col_g2 = st.columns(2)
+
+    # Graphique 1 : ACPL par phase de jeu
+    with col_g1:
+        phases = {
+            "Ouverture\n(coups 1–10)": row_sel["acpl_opening_mean"],
+            "Milieu de jeu\n(coups 11–30)": row_sel["acpl_middlegame_mean"],
+            "Finale\n(coups 31+)": row_sel["acpl_endgame_mean"],
+        }
+        valid_phases = {k: v for k, v in phases.items() if pd.notna(v)}
+        fig, ax = plt.subplots(figsize=(5.5, 3.8))
+        bars = ax.bar(valid_phases.keys(), valid_phases.values(), color=["#4C72B0", "#DD8452", "#55A868"])
+        ax.bar_label(bars, fmt="%.1f", padding=3)
+        ax.set(ylabel="ACPL moyen", title="ACPL moyen par phase de jeu (plus bas = meilleur)")
+        ax.set_ylim(0, max(valid_phases.values(), default=50) * 1.2)
+        plt.tight_layout()
+        render_hd_plot(fig)
+
+    # Graphique 2 : Évolution de la précision partie par partie (si >= 2 parties)
+    with col_g2:
+        player_games = df_games[
+            (df_games["player_name"] == row_sel["player_name"])
+            & (df_games["time_category"] == row_sel["time_category"])
+        ].reset_index(drop=True)
+
+        if len(player_games) >= 2:
+            fig, ax = plt.subplots(figsize=(5.5, 3.8))
+            x_idx = range(1, len(player_games) + 1)
+            ax.plot(x_idx, player_games["accuracy_pct"], marker="o", lw=2, color="#4C72B0")
+            ax.axhline(player_games["accuracy_pct"].mean(), color="red", ls="--", lw=1.2, label="Moyenne")
+            ax.set(
+                xticks=list(x_idx), ylim=(0, 105),
+                xlabel="Numéro de partie", ylabel="Précision (%)",
+                title=f"Évolution de la précision ({row_sel['player_name']})",
+            )
+            ax.legend()
+            plt.tight_layout()
+            render_hd_plot(fig)
+        else:
+            st.info("Importez au moins 2 parties de ce joueur dans cette cadence pour afficher l'évolution de sa précision.")
+
+    # Graphique 3 : SHAP
     prep, model = pipeline["prep"], pipeline["model"]
     X_one = df_profiles.iloc[[selected_idx]][feature_cols]
     X_trans = pd.DataFrame(prep.transform(X_one), columns=[c.split("__")[-1] for c in prep.get_feature_names_out()])
@@ -393,3 +491,54 @@ if "results" in st.session_state:
     fig = plt.figure(figsize=(8, 4.5))
     shap.plots.waterfall(shap_vals[0], max_display=10, show=False)
     st.pyplot(plt.gcf(), clear_figure=True)
+
+    FEATURE_GLOSSARY = [
+        ("accuracy_pct_mean", "Précision moyenne des coups en % sur les parties (formule Lichess, de 0 à 100 %)."),
+        ("accuracy_pct_std", "Écart-type de la précision (%) d'une partie à l'autre (mesure la régularité)."),
+        ("acpl_endgame_mean", "Perte moyenne en centipions (ACPL) en finale (à partir du 31e coup)."),
+        ("acpl_mean", "Perte moyenne en centipions par coup (plus c'est bas, plus le jeu est précis)."),
+        ("acpl_median", "Médiane de l'ACPL sur les parties du joueur (moins sensible aux parties atypiques)."),
+        ("acpl_middlegame_mean", "Perte moyenne en centipions (ACPL) en milieu de jeu (coups 11 à 30)."),
+        ("acpl_opening_mean", "Perte moyenne en centipions (ACPL) dans l'ouverture (10 premiers coups)."),
+        ("acpl_opening_std", "Écart-type de l'ACPL d'ouverture d'une partie à l'autre."),
+        ("acpl_std", "Écart-type de l'ACPL global d'une partie à l'autre (mesure la constance du niveau)."),
+        ("avg_time_per_move_mean", "Temps moyen passé par coup (en secondes)."),
+        ("avg_time_per_move_std", "Écart-type du temps moyen par coup d'une partie à l'autre."),
+        ("avg_win_pct_loss_mean", "Perte moyenne de probabilité de victoire par coup (en points de %)."),
+        ("base_time_mean", "Temps initial moyen de la cadence à la pendule (en secondes)."),
+        ("blunder_rate_mean", "Proportion moyenne de gaffes (perte ≥ 200 centipions sur un coup)."),
+        ("blunder_rate_std", "Écart-type du taux de gaffes d'une partie à l'autre."),
+        ("castle_ply_mean", "Demi-coup moyen auquel le joueur effectue son roque."),
+        ("did_castle_mean", "Proportion des parties dans lesquelles le joueur a roqué (entre 0 et 1)."),
+        ("eco_diversity", "Diversité du répertoire d'ouvertures (nombre de codes ECO distincts / nombre de parties)."),
+        ("eval_volatility_mean", "Écart-type moyen de l'évaluation au cours d'une partie (mesure son caractère chaotique)."),
+        ("final_clock_ratio_mean", "Part moyenne du temps initial encore restante à la pendule en fin de partie."),
+        ("inaccuracy_rate_mean", "Proportion moyenne d'imprécisions (perte entre 50 et 100 centipions)."),
+        ("increment_mean", "Incrément moyen ajouté par coup selon la cadence (en secondes)."),
+        ("mat_end_diff_mean", "Différentiel matériel moyen en fin de partie (positif = avantage matériel)."),
+        ("mistake_rate_mean", "Proportion moyenne d'erreurs (perte entre 100 et 200 centipions)."),
+        ("opening_time_avg_mean", "Temps moyen par coup dans l'ouverture (un temps faible reflète la maîtrise théorique)."),
+        ("result_score_mean", "Score moyen sur les parties (1 = victoire, 0,5 = nulle, 0 = défaite)."),
+        ("std_time_per_move_mean", "Variabilité moyenne du temps de réflexion au sein d'une partie (coups rapides vs réfléchis)."),
+        ("term_rate_Abandon", "Proportion des parties terminées par abandon."),
+        ("term_rate_Échec et mat", "Proportion des parties terminées par échec et mat."),
+        ("term_rate_Nulle", "Proportion des parties terminées par match nul."),
+        ("term_rate_Temps écoulé", "Proportion des parties terminées par perte au temps."),
+        ("time_category_Blitz", "Indicateur binaire (1 si le profil est en cadence Blitz, 0 sinon)."),
+        ("time_category_Bullet", "Indicateur binaire (1 si le profil est en cadence Bullet, 0 sinon)."),
+        ("time_category_Classique", "Indicateur binaire (1 si le profil est en cadence Classique, 0 sinon)."),
+        ("time_category_Rapide", "Indicateur binaire (1 si le profil est en cadence Rapide, 0 sinon)."),
+        ("time_trouble_rate_mean", "Proportion moyenne de coups joués en zeitnot (< 10 s ou < 10 % du temps initial)."),
+        ("top_eco_code", "Code ECO de l'ouverture la plus jouée (encodé selon l'Elo moyen associé)."),
+        ("total_plies_mean", "Longueur moyenne des parties en demi-coups (1 coup complet = 2 demi-coups)."),
+        ("total_plies_std", "Écart-type de la longueur des parties en demi-coups."),
+    ]
+
+    with st.expander("Comprendre les variables du graphique SHAP"):
+        st.caption("Chaque barre rouge ajoute des points Elo à l'estimation moyenne de référence, chaque barre bleue en retire.")
+        st.dataframe(
+            pd.DataFrame(FEATURE_GLOSSARY, columns=["Variable", "Signification"]),
+            hide_index=True,
+            use_container_width=True,
+            height=420,
+        )
